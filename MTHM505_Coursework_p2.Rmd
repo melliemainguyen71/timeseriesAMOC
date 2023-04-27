@@ -234,7 +234,7 @@ As dlm predicts higher bottom point (Q2 prediction), dlm seems to see a shrinkin
 plot(pred_4q$mean[1:4], col = "red", xlab = "Time", ylab = "AMOC Index", xaxt = "n")
 points(AMOC_fc$f[1:4], col = "blue")
 axis(1, at = 1:4, labels = c("2021-Q1", "2021-Q2", "2021-Q3", "2021-Q4"))
-legend("topleft", legend = c("ARIMA", "DLM"), lty = 1, col = c("red", "blue"))
+legend("bottomright", legend = c("ARIMA", "DLM"), lty = 1, col = c("red", "blue"))
 
 ```
 
@@ -268,93 +268,133 @@ ggAcf(amoc_m_ts) + ggtitle("ACF")
 ggPacf(amoc_m_ts) + ggtitle("PACF")
 ```
 
-From the monthly plot, there is a yearly trend in the AMOC over the period. There was some sudden plunges in some few years when AMOC strength dropped to an unprecedented low, however, it quickly recovered to the yearly strength in the previous years.
+From the monthly plot, there is a yearly trend in the AMOC over the period. ACF has spikes nearly every 12 lags (at 7 and 19, at 1 and 11). There was some sudden plunges in some few years when AMOC strength dropped to an unprecedented low, however, it quickly recovered to the yearly strength in the previous years.
 
 After seasonal difference of lag 12, the AMOC strength looks stationary, thus, it does not need any further differencing. We will check ACF and PACF.
 
-In ACF, the significant spike at lag 1 might indicate a non-seasonal MA(1) component, and the significant spike at lag 12 suggests a seasonal MA(1) component. Consequently, we begin with an ARIMA(0,0,1)(0,1,1)[12] model, indicating a seasonal difference, and non-seasonal and seasonal MA(1) components. (By the same logic, if we analyse PACF, we can choose to start with AR(1) component in both non-seasonal and seasonal parts, as PACF has spikes at lag 1 and lag 12)
+In ACF, the significant spike at lag 1 might indicate a non-seasonal MA(1) component, and the significant spike at lag 12 suggests a seasonal MA(1) component. Consequently, we begin with an ARIMA(0,0,1)(0,1,1)[12] model, indicating a seasonal difference, and non-seasonal and seasonal MA(1) components. 
 (https://otexts.com/fpp2/seasonal-arima.html)
 
 ```{r}
 # Plot the SARIMA with seasonal difference
+amoc_m_ts_sdiff <- diff(amoc_m_ts, lag=12) 
+
 par(mfrow=c(1,3), mar=c(4,4,2,2))
-plot(diff(amoc_m_ts, lag = 12), main = 'Seasonal difference')
-acf(diff(amoc_m_ts, lag = 12), main = 'ACF')
-pacf(diff(amoc_m_ts, lag = 12), main = 'PACF')
+plot(amoc_m_ts_sdiff, main = 'Seasonal difference')
+acf(amoc_m_ts_sdiff, main = 'ACF')
+pacf(amoc_m_ts_sdiff, main = 'PACF')
 ```
 
 
 ```{r}
 # Test first SARIMA model
-amoc_m_ts %>% 
-  diff(lag=12) 
-
-amoc_m_ts <- diff(amoc_m_ts, lag=12) 
-
 model_1 <- Arima(amoc_m_ts, order=c(0,0,1), seasonal = c(0,1,1), include.drift = TRUE) 
 par(mar = c(3, 3, 2, 2))
 tsdiag(model_1)
+
+checkresiduals(model_1)
 ```
 
-The residuals look random. From the ACF plot of residuals, we can see that there are some considerable spikes at lag 8 and lag 11. This might suggest some non-seasonal components. 
+The residuals look random. From the ACF plot of residuals, we can see that there are some considerable spikes at lag 12. This might suggest some missing non-seasonal components. 
 
 ```{r}
 # Test some SARIMA model
-# Add AR(1)
-model_2 <- Arima(amoc_m_ts, order=c(0,0,1), seasonal = c(0,1,2), include.drift = TRUE) 
+# Add AR(1) 
+model_2 <- Arima(amoc_m_ts, order=c(1,0,1), seasonal = c(0,1,1), include.drift = TRUE) 
 par(mar = c(3, 3, 2, 2))
 tsdiag(model_2)
+checkresiduals(model_2)
 
-# Raise MA(2)
+# Raise MA(2) in non-seasonal component
 model_3 <- Arima(amoc_m_ts, order=c(1,0,2), seasonal = c(0,1,1), include.drift = TRUE) 
 par(mar = c(3, 3, 2, 2))
 tsdiag(model_3)
+checkresiduals(model_3)
 # more uniformity, thus, we can continue raise MA(3)
 
 # Raise MA(3)
 model_4 <- Arima(amoc_m_ts, order=c(1,0,3), seasonal = c(0,1,1), include.drift = TRUE) 
 par(mar = c(3, 3, 2, 2))
 tsdiag(model_4)
-
-# Raise AR(2)
-model_5 <- Arima(amoc_m_ts, order=c(2,0,3), seasonal = c(0,1,1), include.drift = TRUE) 
-par(mar = c(3, 3, 2, 2))
-tsdiag(model_5)
-
-checkresiduals(model_1)
-checkresiduals(model_5)
+checkresiduals(model_4)
 ```
 
 ```{r}
-model_2 <- Arima(amoc_m_ts, order=c(0,0,1), seasonal = c(5,1,3), include.drift = TRUE) 
-par(mar = c(3, 3, 2, 2))
-tsdiag(model_2)
-
-checkresiduals(model_2)
-```
-
-
-```{r}
-model_5 %>% forecast(h=12) %>% plot()
-
+pred_12m <- forecast(model_4, 12)
+plot(pred_12m)
 ```
 
 From the statistical results, SARIMA(1,0,2) is slightly better than all other models, but the difference is not significant. 
 
 ```{r}
 # Predict with SARIMA
-pred_12m <- forecast(model_ds_m1, 12)
+pred_12m <- forecast(model_4, 12)
 pred_12m_values <- diffinv(pred_12m$mean, lag = 12)
 pred_12m$mean<- pred_12m_values[13:24]
 plot(pred_12m)
 ```
 
-https://online.stat.psu.edu/stat510/lesson/4/4.2
 
 ```{r}
+# Build DLM
+buildFun2 <- function(x) {
+  dlmModPoly(order = 1, dV = exp(x[1]), dW = exp(x[2])) +
+    dlmModSeas(frequency = 12, dV = 0, dW = c(exp(x[3]), rep(0,10)))
+}
+
+# Fit model
+fit2 <- dlmMLE(amoc_m_ts, parm = c(0,0,0), build = buildFun2)
+fitted_model2 <- buildFun2(fit2$par)
+
+# calculate the hidden stats
+pred_dlm2 <- dlmFilter(amoc_m_ts, mod = fitted_model2)
+summary(pred_dlm)
+
+# Decomposition of original series
+x <- cbind(amoc_m_ts, dropFirst(pred_dlm2$a[,c(1,2)]))
+x <- window(x, start = c(1,1))
+colnames(x) <- c("AMOC", "Trend", "Seasonal")
+plot(x, type = 'o', main = "AMOC Strength")
+
 ```
 
 ```{r}
+# Forecast
+AMOC_fc_2 <- dlmForecast(pred_dlm2, nAhead = 12)
+
+# Plot the predictions
+sqrtR <- sapply(AMOC_fc_2$R, function(x) sqrt(x[1,1])) 
+pl <- AMOC_fc_2$a[,1] + qnorm(0.025, sd = sqrtR)
+pu <- AMOC_fc_2$a[,1] + qnorm(0.975, sd = sqrtR)
+x <- ts.union(window(amoc_m_ts, start = c(1, 1)),
+              AMOC_fc_2$a[,1],
+              AMOC_fc_2$f, pl, pu)
+
+par(mar=c(4,4,2,2))
+plot(x, plot.type = "single", type = 'o', pch = c(1, NA, 3, NA, NA),
+     col = c("darkgrey", "red", "black", "blue", "blue"),
+     ylab = "AMOC strength", ylim = c(8, 25))
+legend("bottomright", legend = c("Observed",
+                                 "Forecast", "95% interval"),
+       bty = 'n', pch = c(1, NA, NA), lty = 1,
+       col = c("darkgrey", "red",  "blue"))
+```
+
+https://online.stat.psu.edu/stat510/lesson/4/4.2
+
+```{r}
+# Residual plot of DLM
+par(mar = c(3, 3, 2, 2))
+tsdiag(pred_dlm2)
+```
+
+```{r}
+plot(AMOC_fc_2$f[1:12], col = "blue", xlab = "Time", ylab = "AMOC Index", xaxt = "n")
+points(pred_12m$mean[1:12], col = "red")
+
+axis(1, at = 1:12)
+legend("bottomright", legend = c("ARIMA", "DLM"), lty = 1, col = c("red", "blue"))
+
 ```
 
 ```{r}
