@@ -1,0 +1,383 @@
+---
+output: pdf_document
+---
+
+```{=tex}
+\def\begincols{\begin{columns}}
+\def\begincol{\begin{column}}
+\def\endcol{\end{column}}
+\def\endcols{\end{columns}}
+```
+```{r eval=T, echo=F}
+def.chunk.hook  <- knitr::knit_hooks$get("chunk")
+knitr::knit_hooks$set(chunk = function(x, options) {
+  x <- def.chunk.hook(x, options)
+  ifelse(options$size != "normalsize", paste0("\\", options$size,"\n\n", x, "\n\n \\normalsize"), x)
+})
+
+```
+
+```{r eval=T, echo=F}
+library(knitr)
+opts_chunk$set(tidy.opts=list(width.cutoff=60),tidy=TRUE)
+```
+
+```{r,warning=FALSE,message=FALSE, result=F}
+# Load the required packages
+require(ggplot2)
+require(tidyverse)
+require(MASS)
+require(mgcv)
+require(dplyr)
+require(magrittr)
+require(factoextra)
+require(reshape2)
+require(knitr)
+
+require(mnormt)
+require(readr)
+require(sf)
+require(tmap)
+require(geoR)
+require(maptools)
+require(gstat)
+
+require(forecast)
+require(lubridate)
+require(dlm)
+```
+
+## Question 2
+
+```{r,warning=FALSE,message=FALSE, result=F}
+amoc <- read_csv("AMOCdata.csv")
+
+# Convert Date column to Date format
+amoc$Date <- as.Date(amoc$Date, format = "%d/%m/%Y")
+```
+
+### 2a
+
+Average the data to quarterly means and plot the quarterly average
+
+```{r}
+# Compute the Quarterly mean
+amoc_qtr <- aggregate(amoc$Strength, by = list(Year = amoc$Year, Quarter = amoc$Quarter), mean)
+
+# Arrange the Quarterly mean table
+names(amoc_qtr)[3] <- "Strength"
+amoc_qtr <- amoc_qtr %>%
+  arrange(Year, Quarter)
+
+# Convert to time-series object
+amoc_qtr_ts <- ts(amoc_qtr$Strength)
+
+ggplot(data = data.frame(Time = 1:length(amoc_qtr_ts), y = as.numeric(amoc_qtr_ts)), aes(x = Time, y = y)) +
+  geom_line() +
+  scale_x_continuous(breaks = seq(1, length(amoc_qtr_ts), by = 4),
+                     labels = amoc_qtr$Year[seq(1, nrow(amoc_qtr), by = 4)]) +
+  ggtitle("Quarterly average of AMOC strength")
+ggAcf(amoc_qtr_ts) + ggtitle("ACF")
+ggPacf(amoc_qtr_ts) + ggtitle("PACF")
+```
+
+The quarterly average looks stationary with a constant mean (around 16.5).
+There is no strongly linear trend like decreasing or increasing trend. There can be a seasonal pattern, that the strength is low in the 1st and 2nd quarters every year, while peaking in the 3rd and 4th quarters. The seasonal variation can be decreasing over time (as in 2019 the difference between peak and bottom is much less than 5 while in 2012 and early years, it was around 5)
+
+It can be seen from the three plots that ACF and PACF are not decaying from lag 1 but quite fluctuating suddenly overtime. Both ACF and PACF can be cutoff at lag 2 but lag 1 is nearly 0. This can be due to the lack of data points (we only have 44 points after quarterly averaging).
+
+We might try fitting multiple possible models to see which performs best.
+
+### 2b
+
+As there is no difference needed, firstly, we will fit an ARMA model without a seasonal term. We will try possible models with order 2, 3 and 4, and if there is no sensible fit, we will raise the order later. 
+
+```{r}
+set.seed(1234)
+# order 1
+model_d0_a1 <- Arima(amoc_qtr_ts, order = c(1,0,0))
+model_d0_m1 <- Arima(amoc_qtr_ts, order = c(0,0,1))
+
+# order 2
+model_d0_a1m1 <- Arima(amoc_qtr_ts, order = c(1,0,1))
+model_d0_a2m0 <- Arima(amoc_qtr_ts, order = c(2,0,0))
+model_d0_a0m2 <- Arima(amoc_qtr_ts, order = c(0,0,2))
+
+# order 3
+model_d0_a1m2 <- Arima(amoc_qtr_ts, order = c(1,0,2))
+model_d0_a2m1 <- Arima(amoc_qtr_ts, order = c(2,0,1))
+model_d0_a3m0 <- Arima(amoc_qtr_ts, order = c(3,0,0))
+model_d0_a0m3 <- Arima(amoc_qtr_ts, order = c(0,0,3))
+
+# order 4
+model_d0_a2m2 <- Arima(amoc_qtr_ts, order = c(2,0,2))
+model_d0_a0m4 <- Arima(amoc_qtr_ts, order = c(0,0,4))
+model_d0_a4m0 <- Arima(amoc_qtr_ts, order = c(4,0,0))
+model_d0_a1m3 <- Arima(amoc_qtr_ts, order = c(1,0,3))
+model_d0_a3m1 <- Arima(amoc_qtr_ts, order = c(3,0,1))
+
+# check model statistics
+model_d0_a1
+model_d0_m1
+
+model_d0_a1m1
+model_d0_a2m0
+model_d0_a0m2
+
+model_d0_a1m2
+model_d0_a2m1
+model_d0_a3m0
+model_d0_a0m3
+
+model_d0_a2m2
+model_d0_a0m4
+model_d0_a4m0
+model_d0_a1m3
+model_d0_a3m1
+```
+
+From the statistics, the model (2,0,2) (named as a2m2) seems the best with highest log-likelihood (-89) and lowest AIC (190).
+We will check the residuals of this model, and compare with the result from auto.arima() to see if it's the best.
+
+```{r}
+par(mar = c(3, 3, 2, 2))
+tsdiag(model_d0_a2m2)
+
+model_auto_d0 <- auto.arima(amoc_qtr_ts)
+model_auto_d0
+par(mar = c(3, 3, 2, 2))
+tsdiag(model_auto_d0)
+```
+
+The auto.arima returns (2, 0, 0) model - named as a2m0 as the best model based on AICc (by default). However, it can be seen that the AICc of a2m2 (193) is slightly lower than that of a2m0 (195). Thus, in terms of AIC, AICc or log likelihood, a2m2 seems better, despite that it has higher order (which has been added into AIC).
+
+The variance of a2m2 is 3.4, much lower than that of the auto a2m0 (4.3). 
+
+We can see that the residuals from model a2m2 looks quite random, but it seems to overestimate or underestimate the strength in periods. The positive or negative residuals tend to be grouped of around 3 or 4 consecutive quarters, especially in the last 3 years. This pattern of residuals can be seen in the auto ARIMA model. We will add seasonal term later, so now just compare the two models on other characteristics.
+
+ACF plots and p-values of a2m0 look acceptable - most p values are larger than 0.05, thus we have evidence to conclude that there is no evidence of autocorrelation. The p values of a2m2 are higher than 0.05 up to lag 4. As we already know that there is a seasonal component that we did not incorporate into the model, we can make a good guess that the seasonal cycle is 4 quarter. Thus, although a2m2 has higher order and more complex, we will choose a2m2 as the best model to forecast.
+
+```{r}
+# forecast for the next 4 quarters
+pred_4q <- forecast(model_d0_a2m2, 4)
+plot(pred_4q)
+```
+
+### 2c
+
+We will model AMOC strength using a Dynamic Linear Model with a seasonal component.
+From the above part, we see that the mean is quite constant. However, the cyclic trend seems funneling. 
+
+We will set up the order of dlmModPoly = 1, frequency of dlmModSeas = 4. The plot below shows the decomposition of components of dlm models. As can be seen, the trend looks flat-off above 15 and the seasonal cycles are slightly funneling.
+
+We will use this dlm to forecast the next 4 quarters.
+
+```{r}
+# Build DLM
+buildFun <- function(x) {
+  dlmModPoly(order = 1, dV = exp(x[1]), dW = exp(x[2])) +
+    dlmModSeas(frequency = 4, dV = 0, dW = c(exp(x[3]), rep(0,2)))
+}
+
+# Fit model
+fit <- dlmMLE(amoc_qtr_ts, parm = c(0,0,0), build = buildFun)
+fitted_model <- buildFun(fit$par)
+
+# calculate the hidden stats
+pred_dlm <- dlmFilter(amoc_qtr_ts, mod = fitted_model)
+summary(pred_dlm)
+
+# Decomposition of original series
+x <- cbind(amoc_qtr_ts, dropFirst(pred_dlm$a[,c(1,2)]))
+x <- window(x, start = c(1,1))
+colnames(x) <- c("AMOC", "Trend", "Seasonal")
+plot(x, type = 'o', main = "AMOC Strength")
+```
+
+```{r}
+# Forecast
+AMOC_fc <- dlmForecast(pred_dlm, nAhead = 4)
+
+# Plot the predictions
+sqrtR <- sapply(AMOC_fc$R, function(x) sqrt(x[1,1])) 
+pl <- AMOC_fc$a[,1] + qnorm(0.025, sd = sqrtR)
+pu <- AMOC_fc$a[,1] + qnorm(0.975, sd = sqrtR)
+x <- ts.union(window(amoc_qtr_ts, start = c(1, 1)),
+              AMOC_fc$a[,1],
+              AMOC_fc$f, pl, pu)
+
+par(mar=c(4,4,2,2))
+plot(x, plot.type = "single", type = 'o', pch = c(1, NA, 3, NA, NA),
+     col = c("darkgrey", "red", "black", "blue", "blue"),
+     ylab = "AMOC strength", ylim = c(8, 25))
+legend("bottomright", legend = c("Observed",
+                                 "Forecast", "95% interval"),
+       bty = 'n', pch = c(1, NA, NA), lty = 1,
+       col = c("darkgrey", "red",  "blue"))
+```
+
+We will need to check the residual diagnostic of dlm model. As can be seen from plots below, the residuals are quite randomly distributed around 0, within distance of 2. The ACF of residuals is reasonable. p values of is larger than 0.05 until lag 2, which means no evidence of autocorrelation at lag 1. From the residuals checking, this model is a good fit.
+
+```{r}
+# Residual plot of DLM
+par(mar = c(3, 3, 2, 2))
+tsdiag(pred_dlm)
+```
+
+### 2d
+
+The forecasts from dlm look quite different from the forecasts from ARIMA, except for the Q4 prediction. The predicted AMOC strength in 2nd and 3rd quarters by dlm model is higher than those by ARIMA model. Meanwhile, Q1 prediction of dlm is lower than that of ARIMA.
+
+As dlm predicts higher bottom point (Q2 prediction), dlm seems to see a shrinking variation in seasonal trend of the AMOC strength, while ARIMA (without seasonal component) did not capture that. However, ARIMA(2,0,2) did capture the cyclic trend quite well, even without the seasonal difference.
+
+```{r}
+plot(pred_4q$mean[1:4], col = "red", xlab = "Time", ylab = "AMOC Index", xaxt = "n")
+points(AMOC_fc$f[1:4], col = "blue")
+axis(1, at = 1:4, labels = c("2021-Q1", "2021-Q2", "2021-Q3", "2021-Q4"))
+legend("topleft", legend = c("ARIMA", "DLM"), lty = 1, col = c("red", "blue"))
+
+```
+
+### 2e
+
+Return to the original data, and calculate monthly averages instead
+Find an appropriate 
+1) ARMA/ARIMA/SARIMA model 
+2) a DLM for this monthly dataset, 
+and use each to predict the AMOC strength for the next 12 months.
+
+```{r}
+# Compute the Monthly mean
+amoc_m <- aggregate(amoc$Strength, by = list(Year = amoc$Year, Month = amoc$Month), mean)
+
+# Arrange the Quarterly mean table
+names(amoc_m)[3] <- "Strength"
+amoc_m <- amoc_m %>%
+  arrange(Year, Month)
+
+# Convert to time-series object
+amoc_m_ts <- ts(amoc_m$Strength)
+
+# Plot the time series of monthly average
+ggplot(data = data.frame(Time = 1:length(amoc_m_ts), y = as.numeric(amoc_m_ts)), aes(x = Time, y = y)) +
+  geom_line() +
+  scale_x_continuous(breaks = seq(1, length(amoc_m_ts), by = 12),
+                     labels = amoc_m$Year[seq(1, nrow(amoc_m), by = 12)]) +
+  ggtitle("Monthly average of AMOC strength")
+ggAcf(amoc_m_ts) + ggtitle("ACF")
+ggPacf(amoc_m_ts) + ggtitle("PACF")
+```
+
+From the monthly plot, there is a yearly trend in the AMOC over the period. There was some sudden plunges in some few years when AMOC strength dropped to an unprecedented low, however, it quickly recovered to the yearly strength in the previous years.
+
+After seasonal difference of lag 12, the AMOC strength looks stationary, thus, it does not need any further differencing. We will check ACF and PACF.
+
+In ACF, the significant spike at lag 1 might indicate a non-seasonal MA(1) component, and the significant spike at lag 12 suggests a seasonal MA(1) component. Consequently, we begin with an ARIMA(0,0,1)(0,1,1)[12] model, indicating a seasonal difference, and non-seasonal and seasonal MA(1) components. (By the same logic, if we analyse PACF, we can choose to start with AR(1) component in both non-seasonal and seasonal parts, as PACF has spikes at lag 1 and lag 12)
+(https://otexts.com/fpp2/seasonal-arima.html)
+
+```{r}
+# Plot the SARIMA with seasonal difference
+par(mfrow=c(1,3), mar=c(4,4,2,2))
+plot(diff(amoc_m_ts, lag = 12), main = 'Seasonal difference')
+acf(diff(amoc_m_ts, lag = 12), main = 'ACF')
+pacf(diff(amoc_m_ts, lag = 12), main = 'PACF')
+```
+
+
+```{r}
+# Test first SARIMA model
+amoc_m_ts %>% 
+  diff(lag=12) 
+
+amoc_m_ts <- diff(amoc_m_ts, lag=12) 
+
+model_1 <- Arima(amoc_m_ts, order=c(0,0,1), seasonal = c(0,1,1), include.drift = TRUE) 
+par(mar = c(3, 3, 2, 2))
+tsdiag(model_1)
+```
+
+The residuals look random. From the ACF plot of residuals, we can see that there are some considerable spikes at lag 8 and lag 11. This might suggest some non-seasonal components. 
+
+```{r}
+# Test some SARIMA model
+# Add AR(1)
+model_2 <- Arima(amoc_m_ts, order=c(0,0,1), seasonal = c(0,1,2), include.drift = TRUE) 
+par(mar = c(3, 3, 2, 2))
+tsdiag(model_2)
+
+# Raise MA(2)
+model_3 <- Arima(amoc_m_ts, order=c(1,0,2), seasonal = c(0,1,1), include.drift = TRUE) 
+par(mar = c(3, 3, 2, 2))
+tsdiag(model_3)
+# more uniformity, thus, we can continue raise MA(3)
+
+# Raise MA(3)
+model_4 <- Arima(amoc_m_ts, order=c(1,0,3), seasonal = c(0,1,1), include.drift = TRUE) 
+par(mar = c(3, 3, 2, 2))
+tsdiag(model_4)
+
+# Raise AR(2)
+model_5 <- Arima(amoc_m_ts, order=c(2,0,3), seasonal = c(0,1,1), include.drift = TRUE) 
+par(mar = c(3, 3, 2, 2))
+tsdiag(model_5)
+
+checkresiduals(model_1)
+checkresiduals(model_5)
+```
+
+```{r}
+model_2 <- Arima(amoc_m_ts, order=c(0,0,1), seasonal = c(5,1,3), include.drift = TRUE) 
+par(mar = c(3, 3, 2, 2))
+tsdiag(model_2)
+
+checkresiduals(model_2)
+```
+
+
+```{r}
+model_5 %>% forecast(h=12) %>% plot()
+
+```
+
+From the statistical results, SARIMA(1,0,2) is slightly better than all other models, but the difference is not significant. 
+
+```{r}
+# Predict with SARIMA
+pred_12m <- forecast(model_ds_m1, 12)
+pred_12m_values <- diffinv(pred_12m$mean, lag = 12)
+pred_12m$mean<- pred_12m_values[13:24]
+plot(pred_12m)
+```
+
+https://online.stat.psu.edu/stat510/lesson/4/4.2
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+```
+
+### 2f
+
+Compare the results of e) to your quarterly forecasts.
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+```
