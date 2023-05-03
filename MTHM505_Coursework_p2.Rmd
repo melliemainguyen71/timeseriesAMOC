@@ -268,12 +268,12 @@ ggAcf(amoc_m_ts) + ggtitle("ACF")
 ggPacf(amoc_m_ts) + ggtitle("PACF")
 ```
 
-From the monthly plot, there is a yearly trend in the AMOC over the period. ACF has spikes nearly every 12 lags (at 7 and 19, at 1 and 11). There was some sudden plunges in some few years when AMOC strength dropped to an unprecedented low, however, it quickly recovered to the yearly strength in the previous years.
+From the monthly plot, there is a yearly trend in the AMOC over the period. ACF has spikes nearly every 12 lags (at 7 and 19, at 1 and 11), indicating a seasonal trend. There was some sudden plunges in some few years when AMOC strength dropped to an unprecedented low, however, it quickly recovered to the yearly strength in the previous years.
 
 After seasonal difference of lag 12, the AMOC strength looks stationary, thus, it does not need any further differencing. We will check ACF and PACF.
 
 In ACF, the significant spike at lag 1 might indicate a non-seasonal MA(1) component, and the significant spike at lag 12 suggests a seasonal MA(1) component. Consequently, we begin with an ARIMA(0,0,1)(0,1,1)[12] model, indicating a seasonal difference, and non-seasonal and seasonal MA(1) components. 
-(https://otexts.com/fpp2/seasonal-arima.html)
+Note: by the logic, if we analyse the PACF, we can also start with AR(1) in both non-seasonal and seasonal components.
 
 ```{r}
 # Plot the SARIMA with seasonal difference
@@ -288,52 +288,52 @@ pacf(amoc_m_ts_sdiff, main = 'PACF')
 
 ```{r}
 # Test first SARIMA model
-model_1 <- Arima(amoc_m_ts, order=c(0,0,1), seasonal = c(0,1,1), include.drift = TRUE) 
+model_1 <- Arima(amoc_m_ts, order=c(0,0,1), seasonal = c(0,1,1), include.mean = TRUE) 
+model_1
 par(mar = c(3, 3, 2, 2))
 tsdiag(model_1)
-
 checkresiduals(model_1)
+
 ```
 
-The residuals look random. From the ACF plot of residuals, we can see that there are some considerable spikes at lag 12. This might suggest some missing non-seasonal components. 
+The residuals look random. From the ACF plot of residuals, we can see that there is a considerable spike at lag 8 and 11. This might suggest some missing non-seasonal components. 
 
 ```{r}
 # Test some SARIMA model
 # Add AR(1) 
-model_2 <- Arima(amoc_m_ts, order=c(1,0,1), seasonal = c(0,1,1), include.drift = TRUE) 
+model_2 <- Arima(amoc_m_ts, order=c(1,0,1), seasonal = c(0,1,1), include.mean = TRUE) 
 par(mar = c(3, 3, 2, 2))
 tsdiag(model_2)
 checkresiduals(model_2)
 
 # Raise MA(2) in non-seasonal component
-model_3 <- Arima(amoc_m_ts, order=c(1,0,2), seasonal = c(0,1,1), include.drift = TRUE) 
+model_3 <- Arima(amoc_m_ts, order=c(1,0,2), seasonal = c(0,1,1), include.mean = TRUE) 
 par(mar = c(3, 3, 2, 2))
 tsdiag(model_3)
 checkresiduals(model_3)
 # more uniformity, thus, we can continue raise MA(3)
 
 # Raise MA(3)
-model_4 <- Arima(amoc_m_ts, order=c(1,0,3), seasonal = c(0,1,1), include.drift = TRUE) 
+model_4 <- Arima(amoc_m_ts, order=c(1,0,3), seasonal = c(0,1,1), include.mean = TRUE) 
 par(mar = c(3, 3, 2, 2))
 tsdiag(model_4)
 checkresiduals(model_4)
+
+model_2
+model_3
+model_4
 ```
+
+After adding some non-seasonal components, only model_4 has no spike in their residuals ACF. The residuals plot of model_4 is normally distributed. 
+
+We will predict the next 12 months of AMOC with model SARIMA(1,0,3)(0,1,1)[12].
 
 ```{r}
 pred_12m <- forecast(model_4, 12)
 plot(pred_12m)
 ```
 
-From the statistical results, SARIMA(1,0,2) is slightly better than all other models, but the difference is not significant. 
-
-```{r}
-# Predict with SARIMA
-pred_12m <- forecast(model_4, 12)
-pred_12m_values <- diffinv(pred_12m$mean, lag = 12)
-pred_12m$mean<- pred_12m_values[13:24]
-plot(pred_12m)
-```
-
+Next we will build DLM for the monthly average.
 
 ```{r}
 # Build DLM
@@ -348,7 +348,13 @@ fitted_model2 <- buildFun2(fit2$par)
 
 # calculate the hidden stats
 pred_dlm2 <- dlmFilter(amoc_m_ts, mod = fitted_model2)
-summary(pred_dlm)
+summary(pred_dlm2)
+
+# check residuals
+res <- residuals(pred_dlm2, sd=FALSE)
+qqnorm(res)
+par(mar = c(3, 3, 2, 2))
+tsdiag(pred_dlm2)
 
 # Decomposition of original series
 x <- cbind(amoc_m_ts, dropFirst(pred_dlm2$a[,c(1,2)]))
@@ -357,6 +363,8 @@ colnames(x) <- c("AMOC", "Trend", "Seasonal")
 plot(x, type = 'o', main = "AMOC Strength")
 
 ```
+
+Check the residuals, we can see that there is still a significant spike at lag 1, and all the p-value are equal to 0. This indicates that there is significant autocorrelation remaining in the residuals, although the residuals look normal along the Q-Q line. The model fails the Ljung-Box test, it can be used for forecasting, however, the prediction intervals may not be accurate as there is correlated residuals. 
 
 ```{r}
 # Forecast
@@ -380,44 +388,24 @@ legend("bottomright", legend = c("Observed",
        col = c("darkgrey", "red",  "blue"))
 ```
 
-https://online.stat.psu.edu/stat510/lesson/4/4.2
+### 2f
 
 ```{r}
-# Residual plot of DLM
-par(mar = c(3, 3, 2, 2))
-tsdiag(pred_dlm2)
-```
-
-```{r}
-plot(AMOC_fc_2$f[1:12], col = "blue", xlab = "Time", ylab = "AMOC Index", xaxt = "n")
+plot(AMOC_fc_2$f[1:12], col = "blue", xlab = "Time", ylab = "AMOC Index", 
+     main = "AMOC monthly predictions",
+     xaxt = "n")
 points(pred_12m$mean[1:12], col = "red")
-
 axis(1, at = 1:12)
 legend("bottomright", legend = c("ARIMA", "DLM"), lty = 1, col = c("red", "blue"))
 
+plot(pred_4q$mean[1:4], col = "red", xlab = "Time", ylab = "AMOC Index", 
+     main = "AMOC quarterly predictions",
+     xaxt = "n")
+points(AMOC_fc$f[1:4], col = "blue")
+axis(1, at = 1:4, labels = c("2021-Q1", "2021-Q2", "2021-Q3", "2021-Q4"))
+legend("bottomright", legend = c("ARIMA", "DLM"), lty = 1, col = c("red", "blue"))
 ```
 
-```{r}
-```
+With ARIMA model, the monthly predictions are much different from quarterly predictions. The quarterly results follow an yearly ups and downs, however, monthly predictions only slightly and gradually increase from February 2021 to December 2021. Meanwhile, monthly predictions from DLM are along with quarterly predictions, low in the first two quarters and higher in the later quarters. 
 
-```{r}
-```
-
-### 2f
-
-Compare the results of e) to your quarterly forecasts.
-
-```{r}
-```
-
-```{r}
-```
-
-```{r}
-```
-
-```{r}
-```
-
-```{r}
-```
+(https://otexts.com/fpp2/seasonal-arima.html)
